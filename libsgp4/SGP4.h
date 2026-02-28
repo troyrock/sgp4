@@ -255,6 +255,8 @@ private:
      */
     bool use_simple_model_;
     bool use_deep_space_;
+
+    friend class SGP4Batch;
 };
 
 } // namespace libsgp4

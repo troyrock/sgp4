@@ -14,6 +14,11 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Enable AVX-512 and SIMD Vector Math (libmvec)
+if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -march=native -ffast-math -fno-math-errno -fopenmp-simd")
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
@@ -35,5 +40,11 @@ add_subdirectory(libsgp4)
 add_subdirectory(sattrack)
 add_subdirectory(runtest)
 add_subdirectory(passpredict)
+
+add_executable(benchmark benchmark.cc)
+target_link_libraries(benchmark sgp4)
+
+add_executable(validation_bench validation_bench.cc)
+target_link_libraries(validation_bench sgp4)
 
 file(COPY SGP4-VER.TLE DESTINATION ${PROJECT_BINARY_DIR})

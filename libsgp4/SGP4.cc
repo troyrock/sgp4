@@ -106,7 +106,9 @@ void SGP4::Initialise()
         {
             s4 = 20.0;
         }
-        qoms24 = pow((120.0 - s4) * kAE / kXKMPER, 4.0);
+        const double q_base = (120.0 - s4) * kAE / kXKMPER;
+        const double q_base2 = q_base * q_base;
+        qoms24 = q_base2 * q_base2;
         s4 = s4 / kXKMPER + kAE;
     }
 
@@ -123,8 +125,9 @@ void SGP4::Initialise()
     const double etasq = common_consts_.eta * common_consts_.eta;
     const double eeta = elements_.Eccentricity() * common_consts_.eta;
     const double psisq = fabs(1.0 - etasq);
-    const double coef = qoms24 * pow(tsi, 4.0);
-    const double coef1 = coef / pow(psisq, 3.5);
+    const double tsi2 = tsi * tsi;
+    const double coef = qoms24 * tsi2 * tsi2;
+    const double coef1 = coef / (psisq * psisq * psisq * sqrt(psisq));
     const double c2 = coef1 * elements_.RecoveredMeanMotion()
         * (elements_.RecoveredSemiMajorAxis()
         * (1.0 + 1.5 * etasq + eeta * (4.0 + etasq))
@@ -190,7 +193,8 @@ void SGP4::Initialise()
             nearspace_consts_.xmcof = -kTWOTHIRD * coef * elements_.BStar() * kAE / eeta;
         }
 
-        nearspace_consts_.delmo = pow(1.0 + common_consts_.eta * (cos(elements_.MeanAnomoly())), 3.0);
+        const double etacos0 = 1.0 + common_consts_.eta * (cos(elements_.MeanAnomoly()));
+        nearspace_consts_.delmo = etacos0 * etacos0 * etacos0;
         nearspace_consts_.sinmo = sin(elements_.MeanAnomoly());
 
         if (!use_simple_model_)
@@ -277,7 +281,9 @@ Eci SGP4::FindPositionSDP4(double tsince) const
         throw SatelliteException("Error: (xn <= 0.0)");
     }
 
-    a = pow(kXKE / xn, kTWOTHIRD) * tempa * tempa;
+    const double xn_recip = kXKE / xn;
+    const double xn_recip_sq = xn_recip * xn_recip;
+    a = cbrt(xn_recip_sq) * tempa * tempa;
     e = em - tempe;
     double xmam = xmdf + elements_.RecoveredMeanMotion() * templ;
 
@@ -421,8 +427,9 @@ Eci SGP4::FindPositionSGP4(double tsince) const
     if (!use_simple_model_)
     {
         const double delomg = nearspace_consts_.omgcof * tsince;
+        const double etacos = 1.0 + common_consts_.eta * cos(xmdf);
         const double delm = nearspace_consts_.xmcof
-            * (pow(1.0 + common_consts_.eta * cos(xmdf), 3.0)
+            * (etacos * etacos * etacos
                     - nearspace_consts_.delmo);
         const double temp = delomg + delm;
 
@@ -497,7 +504,7 @@ Eci SGP4::CalculateFinalPositionVelocity(
         const double sinio)
 {
     const double beta2 = 1.0 - e * e;
-    const double xn = kXKE / pow(a, 1.5);
+    const double xn = kXKE / (a * sqrt(a));
     /*
      * long period periodics
      */
@@ -537,10 +544,10 @@ Eci SGP4::CalculateFinalPositionVelocity(
 
     bool kepler_running = true;
 
+    #pragma GCC unroll 10
     for (int i = 0; i < 10 && kepler_running; i++)
     {
-        sinepw = sin(epw);
-        cosepw = cos(epw);
+        __builtin_sincos(epw, &sinepw, &cosepw);
         ecose = axn * cosepw + ayn * sinepw;
         esine = axn * sinepw - ayn * cosepw;
 
@@ -602,11 +609,11 @@ Eci SGP4::CalculateFinalPositionVelocity(
     const double temp32 = a * temp31;
     const double betal = sqrt(temp21);
     const double temp33 = 1.0 / (1.0 + betal);
-    const double cosu = temp32 * (cosepw - axn + ayn * esine * temp33);
-    const double sinu = temp32 * (sinepw - ayn - axn * esine * temp33);
-    const double u = atan2(sinu, cosu);
-    const double sin2u = 2.0 * sinu * cosu;
-    const double cos2u = 2.0 * cosu * cosu - 1.0;
+    const double cosu_unorm = temp32 * (cosepw - axn + ayn * esine * temp33);
+    const double sinu_unorm = temp32 * (sinepw - ayn - axn * esine * temp33);
+    const double u = atan2(sinu_unorm, cosu_unorm);
+    const double sin2u = 2.0 * sinu_unorm * cosu_unorm;
+    const double cos2u = 2.0 * cosu_unorm * cosu_unorm - 1.0;
 
     /*
      * update for short periodics
@@ -626,12 +633,12 @@ Eci SGP4::CalculateFinalPositionVelocity(
     /*
      * orientation vectors
      */
-    const double sinuk = sin(uk);
-    const double cosuk = cos(uk);
-    const double sinik = sin(xinck);
-    const double cosik = cos(xinck);
-    const double sinnok = sin(xnodek);
-    const double cosnok = cos(xnodek);
+    double sinuk, cosuk;
+    __builtin_sincos(uk, &sinuk, &cosuk);
+    double sinik, cosik;
+    __builtin_sincos(xinck, &sinik, &cosik);
+    double sinnok, cosnok;
+    __builtin_sincos(xnodek, &sinnok, &cosnok);
     const double xmx = -sinnok * cosik;
     const double xmy = cosnok * cosik;
     const double ux = xmx * sinuk + cosnok * cosuk;
@@ -1101,10 +1108,12 @@ void SGP4::DeepSpacePeriodics(
 
     // calculate solar terms for time tsince
     double zm = ds_constants.zmos + ZNS * tsince;
-    double zf = zm + 2.0 * ZES * sin(zm);
-    double sinzf = sin(zf);
+    double sinzm = sin(zm);
+    double zf = zm + 2.0 * ZES * sinzm;
+    double sinzf, coszf;
+    __builtin_sincos(zf, &sinzf, &coszf);
     double f2 = 0.5 * sinzf * sinzf - 0.25;
-    double f3 = -0.5 * sinzf * cos(zf);
+    double f3 = -0.5 * sinzf * coszf;
 
     const double ses = ds_constants.se2 * f2
         + ds_constants.se3 * f3;
@@ -1121,10 +1130,11 @@ void SGP4::DeepSpacePeriodics(
 
     // calculate lunar terms for time tsince
     zm = ds_constants.zmol + ZNL * tsince;
-    zf = zm + 2.0 * ZEL * sin(zm);
-    sinzf = sin(zf);
+    sinzm = sin(zm);
+    zf = zm + 2.0 * ZEL * sinzm;
+    __builtin_sincos(zf, &sinzf, &coszf);
     f2 = 0.5 * sinzf * sinzf - 0.25;
-    f3 = -0.5 * sinzf * cos(zf);
+    f3 = -0.5 * sinzf * coszf;
 
     const double sel = ds_constants.ee2 * f2
         + ds_constants.e3 * f3;
@@ -1269,12 +1279,18 @@ void SGP4::DeepSpaceSecular(
             // from the start of the range which is 'atime'
             if (ds_constants.shape == DeepSpaceConstants::SYNCHRONOUS)
             {
-                xndot = ds_constants.del1 * sin(integ_params.xli - FASX2)
-                    + ds_constants.del2 * sin(2.0 * (integ_params.xli - FASX4))
-                    + ds_constants.del3 * sin(3.0 * (integ_params.xli - FASX6));
-                xnddt = ds_constants.del1 * cos(integ_params.xli - FASX2)
-                    + 2.0 * ds_constants.del2 * cos(2.0 * (integ_params.xli - FASX4))
-                    + 3.0 * ds_constants.del3 * cos(3.0 * (integ_params.xli - FASX6));
+                double sinxli, cosxli;
+                __builtin_sincos(integ_params.xli - FASX2, &sinxli, &cosxli);
+                xndot = ds_constants.del1 * sinxli;
+                xnddt = ds_constants.del1 * cosxli;
+                
+                __builtin_sincos(2.0 * (integ_params.xli - FASX4), &sinxli, &cosxli);
+                xndot += ds_constants.del2 * sinxli;
+                xnddt += 2.0 * ds_constants.del2 * cosxli;
+                
+                __builtin_sincos(3.0 * (integ_params.xli - FASX6), &sinxli, &cosxli);
+                xndot += ds_constants.del3 * sinxli;
+                xnddt += 3.0 * ds_constants.del3 * cosxli;
             }
             else
             {
@@ -1282,26 +1298,41 @@ void SGP4::DeepSpaceSecular(
                 const double xomi = elements.ArgumentPerigee() + c_constants.omgdot * integ_params.atime;
                 const double x2omi = xomi + xomi;
                 const double x2li = integ_params.xli + integ_params.xli;
-                xndot = ds_constants.d2201 * sin(x2omi + integ_params.xli - G22)
-                    + ds_constants.d2211 * sin(integ_params.xli - G22)
-                    + ds_constants.d3210 * sin(xomi + integ_params.xli - G32)
-                    + ds_constants.d3222 * sin(-xomi + integ_params.xli - G32)
-                    + ds_constants.d4410 * sin(x2omi + x2li - G44)
-                    + ds_constants.d4422 * sin(x2li - G44)
-                    + ds_constants.d5220 * sin(xomi + integ_params.xli - G52)
-                    + ds_constants.d5232 * sin(-xomi + integ_params.xli - G52)
-                    + ds_constants.d5421 * sin(xomi + x2li - G54)
-                    + ds_constants.d5433 * sin(-xomi + x2li - G54);
-                xnddt = ds_constants.d2201 * cos(x2omi + integ_params.xli - G22)
-                    + ds_constants.d2211 * cos(integ_params.xli - G22)
-                    + ds_constants.d3210 * cos(xomi + integ_params.xli - G32)
-                    + ds_constants.d3222 * cos(-xomi + integ_params.xli - G32)
-                    + ds_constants.d5220 * cos(xomi + integ_params.xli - G52)
-                    + ds_constants.d5232 * cos(-xomi + integ_params.xli - G52)
-                    + 2.0 * (ds_constants.d4410 * cos(x2omi + x2li - G44)
-                    + ds_constants.d4422 * cos(x2li - G44)
-                    + ds_constants.d5421 * cos(xomi + x2li - G54)
-                    + ds_constants.d5433 * cos(-xomi + x2li - G54));
+                
+                double s1, c1, s2, c2, s3, c3, s4, c4, s5, c5;
+                __builtin_sincos(x2omi + integ_params.xli - G22, &s1, &c1);
+                __builtin_sincos(integ_params.xli - G22, &s2, &c2);
+                __builtin_sincos(xomi + integ_params.xli - G32, &s3, &c3);
+                __builtin_sincos(-xomi + integ_params.xli - G32, &s4, &c4);
+                __builtin_sincos(x2omi + x2li - G44, &s5, &c5);
+                
+                xndot = ds_constants.d2201 * s1
+                    + ds_constants.d2211 * s2
+                    + ds_constants.d3210 * s3
+                    + ds_constants.d3222 * s4
+                    + ds_constants.d4410 * s5;
+                xnddt = ds_constants.d2201 * c1
+                    + ds_constants.d2211 * c2
+                    + ds_constants.d3210 * c3
+                    + ds_constants.d3222 * c4
+                    + 2.0 * ds_constants.d4410 * c5;
+
+                __builtin_sincos(x2li - G44, &s1, &c1);
+                __builtin_sincos(xomi + integ_params.xli - G52, &s2, &c2);
+                __builtin_sincos(-xomi + integ_params.xli - G52, &s3, &c3);
+                __builtin_sincos(xomi + x2li - G54, &s4, &c4);
+                __builtin_sincos(-xomi + x2li - G54, &s5, &c5);
+
+                xndot += ds_constants.d4422 * s1
+                    + ds_constants.d5220 * s2
+                    + ds_constants.d5232 * s3
+                    + ds_constants.d5421 * s4
+                    + ds_constants.d5433 * s5;
+                xnddt += 2.0 * ds_constants.d4422 * c1
+                    + ds_constants.d5220 * c2
+                    + ds_constants.d5232 * c3
+                    + 2.0 * (ds_constants.d5421 * c4
+                    + ds_constants.d5433 * c5);
             }
             xldot = integ_params.xni + ds_constants.xfact;
             xnddt *= xldot;

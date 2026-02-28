@@ -8,6 +8,7 @@ set(SRCS
     Observer.cc
     OrbitalElements.cc
     SGP4.cc
+    SGP4Batch.cc
     SatelliteException.cc
     SolarPosition.cc
     TimeSpan.cc
@@ -26,6 +27,7 @@ set(SRCS
      Observer.h
      OrbitalElements.h
      SatelliteException.h
+     SGP4Batch.h
      SGP4.h
      SolarPosition.h
      TimeSpan.h
