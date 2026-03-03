@@ -4,6 +4,7 @@
 #include <string>
 #include <sstream>
 #include <map>
+#include <unordered_map>
 #include <cmath>
 #include <iomanip>
 #include <omp.h>
@@ -14,6 +15,7 @@
 #include "SGP4Batch.h"
 #include "Interpolation.h"
 #include "SpatialPartition.h"
+#include "TemporalPruner.h"
 #include "Globals.h"
 #include "Eci.h"
 #include "DateTime.h"
@@ -23,6 +25,7 @@ using namespace std;
 
 const double SIGMA_KM = 1.5; 
 const double COARSE_THRESHOLD_KM = 50.0; 
+const double MAX_REL_VEL_KMS = 16.0;
 
 struct SatState {
     int id;
@@ -60,7 +63,10 @@ int main(int argc, char* argv[]) {
     string l1, l2, line;
     int limit = (argc > 2) ? stoi(argv[2]) : 5000;
 
-    cout << "Starting Full-Optimized Simulation (SIMD + Interpolation + Spatial Partitioning)..." << endl;
+    // Track "sleeping" pairs to skip checks
+    unordered_map<int, int> probe_sleep_map;
+
+    cout << "Starting Temporal-Optimized Simulation..." << endl;
 
     while (sim_time < end_time) {
         while (getline(infile, line)) {
@@ -78,9 +84,11 @@ int main(int argc, char* argv[]) {
         }
 
         vector<Tle> active_tles;
+        vector<int> sat_ids;
         for(auto const& [id, sat] : catalog) {
             if (abs((sim_time - sat.epoch).TotalDays()) < 30.0) {
                 active_tles.push_back(Tle(sat.l1, sat.l2));
+                sat_ids.push_back(id);
                 if (active_tles.size() >= (size_t)limit) break;
             }
         }
@@ -91,46 +99,43 @@ int main(int argc, char* argv[]) {
         Tle probe_tle = create_probe_tle(target_alt, target_inc, target_raan);
         SGP4 probe_prop(probe_tle);
         int n = active_tles.size();
-
         double daily_hazard = 0;
-        vector<Eci> res0, res1;
 
         for (int s = 0; s < 86400; s += 30) {
-            double t_min0 = (double)s / 60.0;
-            double t_min1 = (double)(s + 30) / 60.0;
+            DateTime t = sim_time.AddSeconds(s);
+            Vector p_pos0 = probe_prop.FindPosition((t - probe_tle.Epoch()).TotalMinutes()).Position();
             
-            batch.Propagate(t_min0, res0, SGP4Batch::MathMode::Standard);
-            batch.Propagate(t_min1, res1, SGP4Batch::MathMode::Standard);
-            
-            Vector p_pos0 = probe_prop.FindPosition(t_min0).Position();
+            vector<Eci> res0, res1;
+            batch.Propagate((t - sim_time).TotalMinutes(), res0);
+            batch.Propagate((t.AddSeconds(30) - sim_time).TotalMinutes(), res1);
 
-            vector<SpatialPartition::Object> spatial_objs(n);
-            #pragma omp parallel for
-            for(int i=0; i<n; i++) {
-                spatial_objs[i] = {i, res0[i].Position().x, res0[i].Position().y, res0[i].Position().z, 0};
-            }
-            SpatialPartition::SortObjects(spatial_objs);
-
-            uint64_t probe_morton = SpatialPartition::morton3D(p_pos0.x, p_pos0.y, p_pos0.z);
-            auto it = lower_bound(spatial_objs.begin(), spatial_objs.end(), probe_morton, 
-                      [](const SpatialPartition::Object& obj, uint64_t m) { return obj.morton < m; });
-            
-            int mid = distance(spatial_objs.begin(), it);
-            int check_range = 500; 
-            int start_idx = max(0, mid - check_range);
-            int end_idx = min(n - 1, mid + check_range);
-
-            for (int i = start_idx; i <= end_idx; i++) {
-                int sat_idx = spatial_objs[i].id;
-                Vector s_pos0 = res0[sat_idx].Position();
-                double dx = p_pos0.x - s_pos0.x, dy = p_pos0.y - s_pos0.y, dz = p_pos0.z - s_pos0.z;
+            #pragma omp parallel for reduction(+:daily_hazard)
+            for (int i = 0; i < n; i++) {
+                int sid = sat_ids[i];
                 
-                if ((dx*dx + dy*dy + dz*dz) < COARSE_THRESHOLD_KM * COARSE_THRESHOLD_KM) {
-                    const Eci& e0 = res0[sat_idx]; const Eci& e1 = res1[sat_idx];
+                // --- PHYSICS OPTIMIZATION: Temporal Sleep ---
+                // Only check if sleep counter is zero
+                bool skip = false;
+                #pragma omp critical(sleep_access)
+                {
+                    if (probe_sleep_map.count(sid) && probe_sleep_map[sid] > 0) {
+                        probe_sleep_map[sid]--;
+                        skip = true;
+                    }
+                }
+                if (skip) continue;
+
+                Vector s_pos0 = res0[i].Position();
+                Vector delta = p_pos0 - s_pos0;
+                double d2 = delta.x*delta.x + delta.y*delta.y + delta.z*delta.z;
+                double d = sqrt(d2);
+
+                if (d < COARSE_THRESHOLD_KM) {
+                    // Refine using Interpolation
+                    const Eci& e0 = res0[i]; const Eci& e1 = res1[i];
                     const Vector& v0 = e0.Velocity(); const Vector& v1 = e1.Velocity();
-                    double min_d2 = 1e12;
-                    
-                    for (int rs = 0; rs < 30; rs++) {
+                    double min_d2 = d2;
+                    for (int rs = 1; rs < 30; rs++) {
                         double u = (double)rs / 30.0;
                         double u2 = u * u; double u3 = u2 * u;
                         double h00 = 2*u3 - 3*u2 + 1; double h10 = u3 - 2*u2 + u;
@@ -140,13 +145,20 @@ int main(int argc, char* argv[]) {
                             h00 * e0.Position().y + h10 * 30.0 * v0.y + h01 * e1.Position().y + h11 * 30.0 * v1.y,
                             h00 * e0.Position().z + h10 * 30.0 * v0.z + h01 * e1.Position().z + h11 * 30.0 * v1.z
                         );
-                        double p_dt = t_min0 + (double)rs/60.0;
+                        double p_dt = (t.AddSeconds(rs) - probe_tle.Epoch()).TotalMinutes();
                         Vector rp = probe_prop.FindPosition(p_dt).Position();
                         Vector rd = rp - rsat;
                         double rd2 = rd.x*rd.x + rd.y*rd.y + rd.z*rd.z;
                         if (rd2 < min_d2) min_d2 = rd2;
                     }
                     daily_hazard += exp(-min_d2 / (2.0 * SIGMA_KM * SIGMA_KM));
+                } else {
+                    // Calculate sleep steps for this satellite
+                    int steps = TemporalPruner::EstimateSleepSteps(d, COARSE_THRESHOLD_KM, 30.0, MAX_REL_VEL_KMS);
+                    if (steps > 0) {
+                        #pragma omp critical(sleep_access)
+                        probe_sleep_map[sid] = steps;
+                    }
                 }
             }
         }
