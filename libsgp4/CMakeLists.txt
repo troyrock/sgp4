@@ -10,6 +10,7 @@ set(SRCS
     SGP4.cc
     SGP4Batch.cc
     JitPropagator.cc
+    LinearBVH.cc
     SatelliteException.cc
     SolarPosition.cc
     TimeSpan.cc
@@ -30,6 +31,8 @@ set(SRCS
      SatelliteException.h
      SGP4Batch.h
      JitPropagator.h
+     LinearBVH.h
+     SpatialHash.h
      SGP4.h
      SolarPosition.h
      TimeSpan.h
