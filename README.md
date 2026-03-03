@@ -22,9 +22,10 @@ To achieve these speed increases, the following techniques were applied:
 - **Precision:** Maximum interpolation error over a 30s window is typically **< 40 millimeters** for LEO orbits, which is physically negligible compared to standard SGP4 model uncertainty.
 - **Performance:** Interpolation is nearly **30x faster** than direct SGP4 propagation, making high-resolution refinement passes virtually free.
 
-### 4. Conjunction screening & Tiling
-- **Loop Tiling:** The conjunction screening pass uses a $256 \times 256$ tiling strategy to optimize cache locality during all-on-all distance checks.
-- **AVX-512 Distance Kernels:** L2 distance calculations are fully vectorized, achieving a **10x speedup** over traditional $O(N^2)$ scalar passes.
+### 4. Spatial Partitioning & Conjunction Screening
+- **Morton Codes (Z-Order Curve):** Implemented an $O(N \log N)$ spatial partitioning scheme. Objects are mapped to a 3D Z-order curve, allowing global proximity queries to bypass the traditional $O(N^2)$ brute-force check.
+- **Loop Tiling:** For all-on-all screening, the engine uses a $256 \times 256$ tiling strategy to optimize cache locality during distance checks.
+- **AVX-512 Distance Kernels:** L2 distance calculations are fully vectorized, achieving a **10x speedup** over traditional scalar passes.
 
 ### 5. Custom Math Mode (Minimax Polynomials)
 - **Minimax Math Mode:** Added an optional `MathMode::Minimax` switch that replaces standard trig libraries with custom 9th-order minimax polynomials.

@@ -13,6 +13,7 @@
 #include "SGP4.h"
 #include "SGP4Batch.h"
 #include "Interpolation.h"
+#include "SpatialPartition.h"
 #include "Globals.h"
 #include "Eci.h"
 #include "DateTime.h"
@@ -21,8 +22,7 @@ using namespace libsgp4;
 using namespace std;
 
 const double SIGMA_KM = 1.5; 
-const double REFINEMENT_THRESHOLD_KM = 200.0; 
-const double SQ_REFINEMENT_THRESHOLD = 40000.0;
+const double COARSE_THRESHOLD_KM = 50.0; 
 
 struct SatState {
     int id;
@@ -60,7 +60,7 @@ int main(int argc, char* argv[]) {
     string l1, l2, line;
     int limit = (argc > 2) ? stoi(argv[2]) : 5000;
 
-    cout << "Starting Vectorized Interpolated Simulation..." << endl;
+    cout << "Starting Full-Optimized Simulation (SIMD + Interpolation + Spatial Partitioning)..." << endl;
 
     while (sim_time < end_time) {
         while (getline(infile, line)) {
@@ -81,13 +81,11 @@ int main(int argc, char* argv[]) {
         for(auto const& [id, sat] : catalog) {
             if (abs((sim_time - sat.epoch).TotalDays()) < 30.0) {
                 active_tles.push_back(Tle(sat.l1, sat.l2));
-                if (active_tles.size() >= limit) break;
+                if (active_tles.size() >= (size_t)limit) break;
             }
         }
 
-        if (active_tles.empty()) {
-            sim_time = sim_time.AddDays(1); continue;
-        }
+        if (active_tles.empty()) { sim_time = sim_time.AddDays(1); continue; }
 
         SGP4Batch batch(active_tles);
         Tle probe_tle = create_probe_tle(target_alt, target_inc, target_raan);
@@ -96,10 +94,7 @@ int main(int argc, char* argv[]) {
 
         double daily_hazard = 0;
         vector<Eci> res0, res1;
-        vector<Vector> interp_pos;
 
-        // Optimized Step: We only propagate at the boundaries of the 30s step.
-        // We use Hermite Interpolation for the 1s sub-steps during refinement.
         for (int s = 0; s < 86400; s += 30) {
             double t_min0 = (double)s / 60.0;
             double t_min1 = (double)(s + 30) / 60.0;
@@ -108,51 +103,47 @@ int main(int argc, char* argv[]) {
             batch.Propagate(t_min1, res1, SGP4Batch::MathMode::Standard);
             
             Vector p_pos0 = probe_prop.FindPosition(t_min0).Position();
-            Vector p_pos1 = probe_prop.FindPosition(t_min1).Position();
 
-            #pragma omp parallel for reduction(+:daily_hazard)
-            for (int i = 0; i < n; i++) {
-                // Coarse distance check at start of interval
-                Vector s_pos0 = res0[i].Position();
-                double dx = p_pos0.x - s_pos0.x;
-                double dy = p_pos0.y - s_pos0.y;
-                double dz = p_pos0.z - s_pos0.z;
-                double d2 = dx*dx + dy*dy + dz*dz;
+            vector<SpatialPartition::Object> spatial_objs(n);
+            #pragma omp parallel for
+            for(int i=0; i<n; i++) {
+                spatial_objs[i] = {i, res0[i].Position().x, res0[i].Position().y, res0[i].Position().z, 0};
+            }
+            SpatialPartition::SortObjects(spatial_objs);
 
-                if (d2 < SQ_REFINEMENT_THRESHOLD) {
-                    // Refine using INTERPOLATION instead of SGP4
-                    // Spline coefficients for the 30s window
-                    double min_d2 = d2;
-                    const Eci& e0 = res0[i];
-                    const Eci& e1 = res1[i];
+            uint64_t probe_morton = SpatialPartition::morton3D(p_pos0.x, p_pos0.y, p_pos0.z);
+            auto it = lower_bound(spatial_objs.begin(), spatial_objs.end(), probe_morton, 
+                      [](const SpatialPartition::Object& obj, uint64_t m) { return obj.morton < m; });
+            
+            int mid = distance(spatial_objs.begin(), it);
+            int check_range = 500; 
+            int start_idx = max(0, mid - check_range);
+            int end_idx = min(n - 1, mid + check_range);
+
+            for (int i = start_idx; i <= end_idx; i++) {
+                int sat_idx = spatial_objs[i].id;
+                Vector s_pos0 = res0[sat_idx].Position();
+                double dx = p_pos0.x - s_pos0.x, dy = p_pos0.y - s_pos0.y, dz = p_pos0.z - s_pos0.z;
+                
+                if ((dx*dx + dy*dy + dz*dz) < COARSE_THRESHOLD_KM * COARSE_THRESHOLD_KM) {
+                    const Eci& e0 = res0[sat_idx]; const Eci& e1 = res1[sat_idx];
+                    const Vector& v0 = e0.Velocity(); const Vector& v1 = e1.Velocity();
+                    double min_d2 = 1e12;
                     
-                    // Velocity at boundaries (km/s)
-                    const Vector& v0 = e0.Velocity();
-                    const Vector& v1 = e1.Velocity();
-
-                    // Probe also needs interpolation or 1s steps
-                    // For simplicity, we'll use 1s steps for the probe (only 1 object)
-                    for (int rs = 1; rs < 30; rs++) {
+                    for (int rs = 0; rs < 30; rs++) {
                         double u = (double)rs / 30.0;
                         double u2 = u * u; double u3 = u2 * u;
-                        double h00 = 2*u3 - 3*u2 + 1;
-                        double h10 = u3 - 2*u2 + u;
-                        double h01 = -2*u3 + 3*u2;
-                        double h11 = u3 - u2;
-
-                        // Interpolated Satellite Position
+                        double h00 = 2*u3 - 3*u2 + 1; double h10 = u3 - 2*u2 + u;
+                        double h01 = -2*u3 + 3*u2; double h11 = u3 - u2;
                         Vector rsat(
                             h00 * e0.Position().x + h10 * 30.0 * v0.x + h01 * e1.Position().x + h11 * 30.0 * v1.x,
                             h00 * e0.Position().y + h10 * 30.0 * v0.y + h01 * e1.Position().y + h11 * 30.0 * v1.y,
                             h00 * e0.Position().z + h10 * 30.0 * v0.z + h01 * e1.Position().z + h11 * 30.0 * v1.z
                         );
-
-                        // Interpolated Probe Position (or exact if cheap)
                         double p_dt = t_min0 + (double)rs/60.0;
                         Vector rp = probe_prop.FindPosition(p_dt).Position();
-
-                        double rdx = rp.x - rsat.x, rdy = rp.y - rsat.y, rdz = rp.z - rsat.z;
-                        double rd2 = rdx*rdx + rdy*rdy + rdz*rdz;
+                        Vector rd = rp - rsat;
+                        double rd2 = rd.x*rd.x + rd.y*rd.y + rd.z*rd.z;
                         if (rd2 < min_d2) min_d2 = rd2;
                     }
                     daily_hazard += exp(-min_d2 / (2.0 * SIGMA_KM * SIGMA_KM));
