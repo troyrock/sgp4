@@ -1,106 +1,56 @@
 #include <SGP4.h>
-#include <SGP4Batch.h>
 #include <Tle.h>
-#include <DateTime.h>
 #include <Vector.h>
 #include <iostream>
-#include <vector>
-#include <fstream>
-#include <string>
-#include <cmath>
 #include <iomanip>
+#include <cmath>
+#include <Globals.h>
 
 using namespace libsgp4;
 
-struct HistoryPoint {
-    Tle tle;
-    DateTime epoch;
-    Vector position;
-    Vector velocity;
-};
-
-void load_history(const std::string& filename, std::vector<HistoryPoint>& history) {
-    std::ifstream file(filename);
-    std::string line;
-    std::string line1, line2;
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        // Clean up trailing backslashes if present
-        if (line.back() == '\\') line.pop_back();
-        
-        if (line[0] == '1') {
-            line1 = line.substr(0, 69);
-        } else if (line[0] == '2') {
-            line2 = line.substr(0, 69);
-            try {
-                Tle tle("18960", line1, line2);
-                SGP4 model(tle);
-                Eci eci = model.FindPosition(0.0);
-                history.push_back({tle, tle.Epoch(), eci.Position(), eci.Velocity()});
-            } catch (...) {
-                // Skip invalid lines
-            }
-        }
-    }
-}
-
-double distance(const Vector& v1, const Vector& v2) {
-    double dx = v1.x - v2.x;
-    double dy = v1.y - v2.y;
-    double dz = v1.z - v2.z;
-    return std::sqrt(dx*dx + dy*dy + dz*dz);
-}
-
 int main() {
-    std::vector<HistoryPoint> history;
-    load_history("/home/troyrock/.openclaw/workspace/sgp4_project/data/18960_history.txt", history);
-
-    if (history.size() < 2) {
-        std::cerr << "Insufficient history data!" << std::endl;
-        return 1;
-    }
-
-    std::cout << "Loaded " << history.size() << " TLEs for Object 18960." << std::endl;
-    std::cout << "Starting validation from initial epoch: " << history[0].epoch << std::endl;
-
-    // Use the first TLE as the base for long-term propagation
-    Tle base_tle = history[0].tle;
-    SGP4 scalar_model(base_tle);
+    std::string l1 = "1 18960U 88022A   20001.30746459  .00000074  00000-0  16196-4 0  9998";
+    std::string l2 = "2 18960  99.0194  66.6961 0011855 238.9327 121.1118 14.13525141129339";
+    Tle tle("18960", l1, l2);
+    SGP4 model(tle);
     
-    // Setup Batch (just for this one object to compare precision)
-    std::vector<Tle> batch_tles = {base_tle};
-    SGP4Batch batch_model(batch_tles);
-    std::vector<Eci> batch_results;
+    double nodeo = model.elements_.AscendingNode();
+    double inclo = model.elements_.Inclination();
+    double omgo = model.elements_.ArgumentPerigee();
+    double mo = model.elements_.MeanAnomoly();
+    double r = model.elements_.RecoveredSemiMajorAxis();
 
-    std::ofstream csv("validation_results.csv");
-    csv << "MinutesSinceEpoch,ScalarError_km,BatchError_km,ScalarVsBatch_km" << std::endl;
+    double snn = sin(nodeo), csn = cos(nodeo);
+    double sni = sin(inclo), csi = cos(inclo);
 
-    for (size_t i = 1; i < history.size(); ++i) {
-        double tsince = (history[i].epoch - history[0].epoch).TotalMinutes();
-        
-        // Scalar Propagation
-        Eci scalar_eci = scalar_model.FindPosition(tsince);
-        double scalar_err = distance(scalar_eci.Position(), history[i].position);
+    double u = omgo + mo;
+    double snu = sin(u), csu = cos(u);
 
-        // Batch Propagation
-        batch_model.Propagate(tsince, batch_results);
-        double batch_err = distance(batch_results[0].Position(), history[i].position);
-        
-        // Internal Consistency (Scalar vs Batch)
-        double consistency = distance(scalar_eci.Position(), batch_results[0].Position());
+    // Orientation vectors from SGP4.cc (580+)
+    double xmx = -snn * csi;
+    double xmy = csn * csi;
+    double ux = xmx * snu + csn * csu;
+    double uy = xmy * snu + snn * csu;
+    double uz = sni * snu;
+    
+    std::cout << "Original UX: " << ux << " UY: " << uy << " UZ: " << uz << std::endl;
+    
+    // Position using full rotation Rz(node)*Rx(inc)*Rz(argp) = [r*cos(u), r*sin(u), 0]
+    // My previous "manual" rotation Rz(node)*Rx(inc)*Rz(u) from [1, 0, 0] matched this.
+    
+    // What if inclination is reversed?
+    double ux_r = csn * csu - snn * csi * snu;
+    double uy_r = snn * csu + csn * csi * snu;
+    double uz_r = sni * snu;
+    std::cout << "ux_r: " << ux_r << " uy_r: " << uy_r << " uz_r: " << uz_r << std::endl;
 
-        csv << std::fixed << std::setprecision(4) 
-            << tsince << "," 
-            << scalar_err << "," 
-            << batch_err << "," 
-            << consistency << std::endl;
-
-        if (i % 500 == 0) {
-            std::cout << "Processed " << i << " points... Current Error: " << scalar_err << " km" << std::endl;
-        }
-    }
-
-    std::cout << "Validation complete. Results saved to validation_results.csv" << std::endl;
+    // What if Z is swapped with Y?
+    // What if the matrix is Rz(node) * Ry(inc)?
+    // Or Rx(inc) * Rz(node)?
+    
+    Vector p0 = model.FindPosition(0).Position();
+    double r0 = sqrt(p0.x*p0.x + p0.y*p0.y + p0.z*p0.z);
+    std::cout << "Scalar:      " << p0.x / r0 << " " << p0.y / r0 << " " << p0.z / r0 << std::endl;
 
     return 0;
 }

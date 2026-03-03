@@ -1,84 +1,58 @@
 #pragma once
 
 #include "Tle.h"
-#include "OrbitalElements.h"
-#include "Eci.h"
 #include <vector>
+#include "Eci.h"
+#include "DateTime.h"
+#include <memory>
 
 namespace libsgp4
 {
 
+/**
+ * @brief SGP4Batch - High-performance vectorized SGP4 propagator.
+ */
 class SGP4Batch
 {
 public:
-    static constexpr int BATCH_SIZE = 8;
-
-    struct alignas(64) BatchConstants {
-        // Common
-        double cosio[BATCH_SIZE];
-        double sinio[BATCH_SIZE];
-        double eta[BATCH_SIZE];
-        double t2cof[BATCH_SIZE];
-        double x1mth2[BATCH_SIZE];
-        double x3thm1[BATCH_SIZE];
-        double x7thm1[BATCH_SIZE];
-        double aycof[BATCH_SIZE];
-        double xlcof[BATCH_SIZE];
-        double xnodcf[BATCH_SIZE];
-        double c1[BATCH_SIZE];
-        double c4[BATCH_SIZE];
-        double omgdot[BATCH_SIZE];
-        double xnodot[BATCH_SIZE];
-        double xmdot[BATCH_SIZE];
-
-        // Near Space
-        double c5[BATCH_SIZE];
-        double omgcof[BATCH_SIZE];
-        double xmcof[BATCH_SIZE];
-        double delmo[BATCH_SIZE];
-        double sinmo[BATCH_SIZE];
-        double d2[BATCH_SIZE];
-        double d3[BATCH_SIZE];
-        double d4[BATCH_SIZE];
-        double t3cof[BATCH_SIZE];
-        double t4cof[BATCH_SIZE];
-        double t5cof[BATCH_SIZE];
-
-        // Elements
-        double xmo[BATCH_SIZE];
-        double nodeo[BATCH_SIZE];
-        double omegao[BATCH_SIZE];
-        double ecco[BATCH_SIZE];
-        double inclo[BATCH_SIZE];
-        double bstar[BATCH_SIZE];
-        double aodp[BATCH_SIZE];
-        double no_kozai[BATCH_SIZE];
-        
-        // Results (re-using buffer to avoid alloc)
-        double res_x[BATCH_SIZE];
-        double res_y[BATCH_SIZE];
-        double res_z[BATCH_SIZE];
-        double res_vx[BATCH_SIZE];
-        double res_vy[BATCH_SIZE];
-        double res_vz[BATCH_SIZE];
-        
-        bool use_simple_model[BATCH_SIZE];
-        bool use_deep_space[BATCH_SIZE];
-        bool active[BATCH_SIZE];
-        
-        DateTime epoch[BATCH_SIZE];
+    enum class MathMode {
+        Standard,   // libmvec (High precision)
+        Minimax     // Fast Polynomial Approx (~1e-12 precision)
     };
 
     SGP4Batch(const std::vector<Tle>& tles);
-    
-    void Propagate(double tsince, std::vector<Eci>& results) const;
+    void Propagate(double tsince, std::vector<Eci>& results, MathMode mode = MathMode::Standard) const;
 
-    // Optimized propagation using pre-allocated memory pool
-    void PropagatePool(double tsince, std::vector<Eci>& pool) const;
+    int total_satellites() const { return total_satellites_; }
 
 private:
-    std::vector<BatchConstants> batches_;
     int total_satellites_;
+    int padded_satellites_;
+
+    template<typename T>
+    struct AlignedDeleter {
+        void operator()(T* p) const { free(p); }
+    };
+
+    template<typename T>
+    using AlignedPtr = std::unique_ptr<T[], AlignedDeleter<T>>;
+
+    template<typename T>
+    static AlignedPtr<T> make_aligned(size_t size) {
+        void* ptr = nullptr;
+        if (posix_memalign(&ptr, 64, size * sizeof(T)) != 0) throw std::bad_alloc();
+        return AlignedPtr<T>(static_cast<T*>(ptr));
+    }
+
+    // SoA storage
+    AlignedPtr<double> cosio, sinio, eta, t2cof, x1mth2, x3thm1, x7thm1, aycof, xlcof, xnodcf, c1, c4, omgdot, xnodot, xmdot;
+    AlignedPtr<double> c5, omgcof, xmcof, delmo, sinmo, d2, d3, d4, t3cof, t4cof, t5cof;
+    AlignedPtr<double> xmo, nodeo, omegao, ecco, inclo, bstar, aodp, no_kozai;
+    AlignedPtr<double> use_simple_model, use_deep_space, active;
+
+    std::vector<DateTime> epochs;
+
+    mutable AlignedPtr<double> last_tsince, memo_e, memo_a, memo_omega, memo_xl, memo_xnode;
 };
 
 } // namespace libsgp4

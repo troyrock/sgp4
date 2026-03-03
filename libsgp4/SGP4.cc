@@ -102,7 +102,7 @@ void SGP4::Initialise()
     if (elements_.Perigee() < 156.0)
     {
         s4 = elements_.Perigee() - 78.0;
-        if (elements_.Perigee() < 98.0) 
+        if (elements_.Perigee() < 98.0)
         {
             s4 = 20.0;
         }
@@ -421,8 +421,10 @@ Eci SGP4::FindPositionSGP4(double tsince) const
     const double tsq = tsince * tsince;
     xnode = xnoddf + common_consts_.xnodcf * tsq;
     double tempa = 1.0 - common_consts_.c1 * tsince;
-    double tempe = elements_.BStar() * common_consts_.c4 * tsince;
+    const double bstar = use_bstar_override ? bstar_override : elements_.BStar();
+    double tempe = bstar * common_consts_.c4 * tsince;
     double templ = common_consts_.t2cof * tsq;
+    xl = xmdf + omgadf + xnoddf;
 
     if (!use_simple_model_)
     {
@@ -441,7 +443,7 @@ Eci SGP4::FindPositionSGP4(double tsince) const
 
         tempa = tempa - nearspace_consts_.d2 * tsq - nearspace_consts_.d3
             * tcube - nearspace_consts_.d4 * tfour;
-        tempe += elements_.BStar() * nearspace_consts_.c5
+        tempe += bstar * nearspace_consts_.c5
             * (sin(xmp) - nearspace_consts_.sinmo);
         templ += nearspace_consts_.t3cof * tcube + tfour
             * (nearspace_consts_.t4cof + tsince * nearspace_consts_.t5cof);
@@ -449,7 +451,9 @@ Eci SGP4::FindPositionSGP4(double tsince) const
 
     a = elements_.RecoveredSemiMajorAxis() * tempa * tempa;
     e = elements_.Eccentricity() - tempe;
-    xl = xmp + omega + xnode + elements_.RecoveredMeanMotion() * templ;
+    const double tsince_days = tsince / 1440.0;
+    const double corr_rad = 0.5 * drift_rad_min_day * tsince_days * tsince;
+    xl = xmdf + omgadf + xnode + elements_.RecoveredMeanMotion() * templ;
 
     /*
      * fix tolerance for error recognition
@@ -542,10 +546,8 @@ Eci SGP4::CalculateFinalPositionVelocity(
      */
     const double max_newton_naphson = 1.25 * fabs(sqrt(elsq));
 
-    bool kepler_running = true;
-
     #pragma GCC unroll 10
-    for (int i = 0; i < 10 && kepler_running; i++)
+    for (int i = 0; i < 10; i++)
     {
         __builtin_sincos(epw, &sinepw, &cosepw);
         ecose = axn * cosepw + ayn * sinepw;
@@ -555,7 +557,7 @@ Eci SGP4::CalculateFinalPositionVelocity(
 
         if (fabs(f) < 1.0e-12)
         {
-            kepler_running = false;
+            break;
         }
         else
         {
@@ -795,7 +797,7 @@ void SGP4::DeepSpaceInitialise(
 
         const double z11 = -6.0 * a1 * a5
             + eosq * (-24. * x1 * x7 - 6. * x3 * x5);
-        const double z12 = -6.0 * (a1 * a6 + a3 * a5) 
+        const double z12 = -6.0 * (a1 * a6 + a3 * a5)
             + eosq * (-24. * (x2 * x7 + x1 * x8) - 6. * (x3 * x6 + x4 * x5));
         const double z13 = -6.0 * a3 * a6
             + eosq * (-24. * x2 * x8 - 6. * x4 * x6);
@@ -1257,7 +1259,7 @@ void SGP4::DeepSpaceSecular(
          * 1st condition (if tsince is less than one time step from epoch)
          * 2nd condition (if atime and
          *     tsince are of opposite signs, so zero crossing required)
-         * 3rd condition (if tsince is closer to zero than 
+         * 3rd condition (if tsince is closer to zero than
          *     atime, only integrate away from zero)
          */
         if (fabs(tsince) < STEP ||
@@ -1283,11 +1285,11 @@ void SGP4::DeepSpaceSecular(
                 __builtin_sincos(integ_params.xli - FASX2, &sinxli, &cosxli);
                 xndot = ds_constants.del1 * sinxli;
                 xnddt = ds_constants.del1 * cosxli;
-                
+
                 __builtin_sincos(2.0 * (integ_params.xli - FASX4), &sinxli, &cosxli);
                 xndot += ds_constants.del2 * sinxli;
                 xnddt += 2.0 * ds_constants.del2 * cosxli;
-                
+
                 __builtin_sincos(3.0 * (integ_params.xli - FASX6), &sinxli, &cosxli);
                 xndot += ds_constants.del3 * sinxli;
                 xnddt += 3.0 * ds_constants.del3 * cosxli;
@@ -1298,14 +1300,14 @@ void SGP4::DeepSpaceSecular(
                 const double xomi = elements.ArgumentPerigee() + c_constants.omgdot * integ_params.atime;
                 const double x2omi = xomi + xomi;
                 const double x2li = integ_params.xli + integ_params.xli;
-                
+
                 double s1, c1, s2, c2, s3, c3, s4, c4, s5, c5;
                 __builtin_sincos(x2omi + integ_params.xli - G22, &s1, &c1);
                 __builtin_sincos(integ_params.xli - G22, &s2, &c2);
                 __builtin_sincos(xomi + integ_params.xli - G32, &s3, &c3);
                 __builtin_sincos(-xomi + integ_params.xli - G32, &s4, &c4);
                 __builtin_sincos(x2omi + x2li - G44, &s5, &c5);
-                
+
                 xndot = ds_constants.d2201 * s1
                     + ds_constants.d2211 * s2
                     + ds_constants.d3210 * s3
