@@ -9,6 +9,7 @@ set(SRCS
     OrbitalElements.cc
     SGP4.cc
     SGP4Batch.cc
+    JitPropagator.cc
     SatelliteException.cc
     SolarPosition.cc
     TimeSpan.cc
@@ -28,6 +29,7 @@ set(SRCS
      OrbitalElements.h
      SatelliteException.h
      SGP4Batch.h
+     JitPropagator.h
      SGP4.h
      SolarPosition.h
      TimeSpan.h
@@ -39,5 +41,7 @@ set(SRCS
 
 add_library(sgp4 STATIC ${SRCS} ${INCS})
 add_library(sgp4s SHARED ${SRCS} ${INCS})
+target_link_libraries(sgp4 ${CMAKE_DL_LIBS})
+target_link_libraries(sgp4s ${CMAKE_DL_LIBS})
 install( TARGETS sgp4s LIBRARY DESTINATION lib )
 install( FILES ${INCS} DESTINATION include/libsgp4 )

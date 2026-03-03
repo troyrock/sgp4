@@ -44,13 +44,13 @@ add_subdirectory(passpredict)
 add_executable(benchmark benchmark.cc)
 target_link_libraries(benchmark sgp4)
 
-add_executable(test_match test_match.cc)
-target_link_libraries(test_match sgp4)
-
 add_executable(validation_bench validation_bench.cc)
 target_link_libraries(validation_bench sgp4)
 
 add_executable(parallel_bench parallel_bench.cc)
 target_link_libraries(parallel_bench sgp4)
+
+add_executable(run_5year_sim_vectorized run_5year_sim_vectorized.cc)
+target_link_libraries(run_5year_sim_vectorized sgp4)
 
 file(COPY SGP4-VER.TLE DESTINATION ${PROJECT_BINARY_DIR})

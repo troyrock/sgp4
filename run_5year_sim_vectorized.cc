@@ -13,6 +13,7 @@
 #include "Tle.h"
 #include "SGP4.h"
 #include "SGP4Batch.h"
+#include "JitPropagator.h"
 #include "Interpolation.h"
 #include "SpatialPartition.h"
 #include "TemporalPruner.h"
@@ -63,12 +64,13 @@ int main(int argc, char* argv[]) {
     string l1, l2, line;
     int limit = (argc > 2) ? stoi(argv[2]) : 5000;
 
-    // Track "sleeping" pairs to skip checks
     unordered_map<int, int> probe_sleep_map;
 
-    cout << "Starting Temporal-Optimized Simulation..." << endl;
+    cout << "Starting JIT-Optimized Mission Simulation..." << endl;
 
     while (sim_time < end_time) {
+        infile.clear();
+        infile.seekg(0, ios::beg);
         while (getline(infile, line)) {
             if (line.empty()) continue;
             if (line[0] == '1') l1 = line;
@@ -96,6 +98,7 @@ int main(int argc, char* argv[]) {
         if (active_tles.empty()) { sim_time = sim_time.AddDays(1); continue; }
 
         SGP4Batch batch(active_tles);
+        JitPropagator jit(batch);
         Tle probe_tle = create_probe_tle(target_alt, target_inc, target_raan);
         SGP4 probe_prop(probe_tle);
         int n = active_tles.size();
@@ -106,15 +109,12 @@ int main(int argc, char* argv[]) {
             Vector p_pos0 = probe_prop.FindPosition((t - probe_tle.Epoch()).TotalMinutes()).Position();
             
             vector<Eci> res0, res1;
-            batch.Propagate((t - sim_time).TotalMinutes(), res0);
-            batch.Propagate((t.AddSeconds(30) - sim_time).TotalMinutes(), res1);
+            jit.Propagate((t - sim_time).TotalMinutes(), batch, res0);
+            jit.Propagate((t.AddSeconds(30) - sim_time).TotalMinutes(), batch, res1);
 
             #pragma omp parallel for reduction(+:daily_hazard)
             for (int i = 0; i < n; i++) {
                 int sid = sat_ids[i];
-                
-                // --- PHYSICS OPTIMIZATION: Temporal Sleep ---
-                // Only check if sleep counter is zero
                 bool skip = false;
                 #pragma omp critical(sleep_access)
                 {
@@ -127,14 +127,13 @@ int main(int argc, char* argv[]) {
 
                 Vector s_pos0 = res0[i].Position();
                 Vector delta = p_pos0 - s_pos0;
-                double d2 = delta.x*delta.x + delta.y*delta.y + delta.z*delta.z;
-                double d = sqrt(d2);
+                double dist2 = delta.x*delta.x + delta.y*delta.y + delta.z*delta.z;
+                double dist = sqrt(dist2);
 
-                if (d < COARSE_THRESHOLD_KM) {
-                    // Refine using Interpolation
+                if (dist < COARSE_THRESHOLD_KM) {
                     const Eci& e0 = res0[i]; const Eci& e1 = res1[i];
                     const Vector& v0 = e0.Velocity(); const Vector& v1 = e1.Velocity();
-                    double min_d2 = d2;
+                    double min_d2 = dist2;
                     for (int rs = 1; rs < 30; rs++) {
                         double u = (double)rs / 30.0;
                         double u2 = u * u; double u3 = u2 * u;
@@ -153,8 +152,7 @@ int main(int argc, char* argv[]) {
                     }
                     daily_hazard += exp(-min_d2 / (2.0 * SIGMA_KM * SIGMA_KM));
                 } else {
-                    // Calculate sleep steps for this satellite
-                    int steps = TemporalPruner::EstimateSleepSteps(d, COARSE_THRESHOLD_KM, 30.0, MAX_REL_VEL_KMS);
+                    int steps = TemporalPruner::EstimateSleepSteps(dist, COARSE_THRESHOLD_KM, 30.0, MAX_REL_VEL_KMS);
                     if (steps > 0) {
                         #pragma omp critical(sleep_access)
                         probe_sleep_map[sid] = steps;
