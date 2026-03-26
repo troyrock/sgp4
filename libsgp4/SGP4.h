@@ -45,6 +45,7 @@ public:
     }
 
     void SetTle(const Tle& tle);
+    void SetAlongTrackBias(double bias_rad);
     Eci FindPosition(double tsince) const;
     Eci FindPosition(const DateTime& date) const;
 

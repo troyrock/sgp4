@@ -39,6 +39,11 @@ void SGP4::SetTle(const Tle& tle)
     Initialise();
 }
 
+void SGP4::SetAlongTrackBias(double bias_rad)
+{
+    drift_rad_min_day = bias_rad;
+}
+
 void SGP4::Initialise()
 {
     /*
@@ -454,6 +459,7 @@ Eci SGP4::FindPositionSGP4(double tsince) const
     const double tsince_days = tsince / 1440.0;
     const double corr_rad = 0.5 * drift_rad_min_day * tsince_days * tsince;
     xl = xmdf + omgadf + xnode + elements_.RecoveredMeanMotion() * templ;
+    xl += corr_rad;
 
     /*
      * fix tolerance for error recognition

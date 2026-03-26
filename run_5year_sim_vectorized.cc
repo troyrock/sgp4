@@ -9,18 +9,18 @@
 #include <omp.h>
 #include <algorithm>
 #include <immintrin.h>
-#include "Tle.h"
-#include "SGP4.h"
-#include "SGP4Batch.h"
-#include "JitPropagator.h"
-#include "LinearBVH.h"
-#include "SpatialHash.h"
-#include "Interpolation.h"
-#include "SpatialPartition.h"
-#include "TemporalPruner.h"
-#include "Globals.h"
-#include "Eci.h"
-#include "DateTime.h"
+#include "libsgp4/Tle.h"
+#include "libsgp4/SGP4.h"
+#include "libsgp4/SGP4Batch.h"
+#include "libsgp4/JitPropagator.h"
+#include "libsgp4/LinearBVH.h"
+#include "libsgp4/SpatialHash.h"
+#include "libsgp4/Interpolation.h"
+#include "libsgp4/SpatialPartition.h"
+#include "libsgp4/TemporalPruner.h"
+#include "libsgp4/Globals.h"
+#include "libsgp4/Eci.h"
+#include "libsgp4/DateTime.h"
 
 using namespace libsgp4;
 using namespace std;
@@ -62,33 +62,43 @@ int main(int argc, char* argv[]) {
         SGP4 probe_prop(create_probe_tle(target_alt, target_inc, target_raan));
         int n = active_tles.size();
 
+        // Pre-allocate scratch buffers once per day to avoid repeated heap allocations
+        std::vector<Eci> res_coarse;
+        res_coarse.reserve(n);
+        std::vector<SpatialHash::Signature> t_sigs(n);
+        std::vector<int> candidates_hash;
+        candidates_hash.reserve(1024);
+        LinearBVH bvh;
+        std::vector<LinearBVH::Object> bvh_objs;
+        bvh_objs.reserve(n);
+        std::vector<int> final_candidates;
+        final_candidates.reserve(1024);
+
         for (int s = 0; s < 86400; s += 30) {
             DateTime t = sim_time.AddSeconds(s);
             Vector p_pos = probe_prop.FindPosition((t - sim_time).TotalMinutes()).Position();
             SpatialHash::Signature p_sig = SpatialHash::Generate(p_pos);
             
             // 1. Coarse Pass (Adaptive Precision: Minimax)
-            vector<Eci> res_coarse;
+            res_coarse.clear();
             batch.Propagate((t - sim_time).TotalMinutes(), res_coarse, SGP4Batch::MathMode::Minimax);
 
             // 2. Spatial Hash Filtering (AVX-512 VPOPCNTDQ / TEST-MASK)
-            std::vector<SpatialHash::Signature> t_sigs(n);
-            std::vector<int> candidates_hash;
+            candidates_hash.clear();
             for(int i=0; i<n; i++) t_sigs[i] = SpatialHash::Generate(res_coarse[i].Position());
             SpatialHash::Filter(p_sig, t_sigs, candidates_hash);
 
             if (candidates_hash.empty()) continue;
 
             // 3. BVH Refinement (Linear BVH Traversal)
-            LinearBVH bvh;
-            std::vector<LinearBVH::Object> bvh_objs;
+            bvh_objs.clear();
             for(int idx : candidates_hash) {
                 const Vector& v = res_coarse[idx].Position();
                 bvh_objs.push_back({idx, (float)v.x, (float)v.y, (float)v.z, 0});
             }
             bvh.Build(bvh_objs);
             
-            std::vector<int> final_candidates;
+            final_candidates.clear();
             bvh.Query(p_pos, COARSE_THRESHOLD_KM, final_candidates);
 
             if (final_candidates.empty()) continue;

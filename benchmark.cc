@@ -1,8 +1,8 @@
-#include <SGP4.h>
-#include <SGP4Batch.h>
-#include <Tle.h>
-#include <DateTime.h>
-#include <Vector.h>
+#include "libsgp4/SGP4.h"
+#include "libsgp4/SGP4Batch.h"
+#include "libsgp4/Tle.h"
+#include "libsgp4/DateTime.h"
+#include "libsgp4/Vector.h"
 #include <chrono>
 #include <iostream>
 #include <vector>
@@ -52,11 +52,12 @@ int main(int argc, char* argv[]) {
     {
         auto start = high_resolution_clock::now();
         unsigned long long total_propagations = 0;
-        for (const auto& tle : tles) {
-            SGP4 sgp4(tle);
+        #pragma omp parallel for reduction(+:total_propagations)
+        for (int t = 0; t < (int)tles.size(); ++t) {
+            SGP4 sgp4(tles[t]);
             for (int i = 0; i < iterations; ++i) {
                 try {
-                    Eci eci = sgp4.FindPosition(static_cast<double>(i));
+                    sgp4.FindPosition(static_cast<double>(i));
                     total_propagations++;
                 } catch (...) { break; }
             }
